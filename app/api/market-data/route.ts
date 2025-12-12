@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import yahooFinance from 'yahoo-finance2';
 import * as cheerio from 'cheerio';
 
+// 爬虫函数
 async function fetchLiveCape() {
   try {
     const response = await fetch('https://www.multpl.com/shiller-pe/table/by-month', {
@@ -42,22 +43,36 @@ export async function GET() {
     const startDate = new Date();
     startDate.setFullYear(startDate.getFullYear() - 4);
 
-    const [btcData, nvdaData, capeHistory] = await Promise.all([
-      yahooFinance.historical('BTC-USD', { period1: startDate, period2: endDate, interval: '1wk' }),
-      yahooFinance.historical('NVDA', { period1: startDate, period2: endDate, interval: '1wk' }),
+    const queryOptions = { period1: startDate, period2: endDate, interval: '1wk' as const };
+
+    const [btcResult, nvdaResult, capeResult] = await Promise.all([
+      yahooFinance.historical('BTC-USD', queryOptions),
+      yahooFinance.historical('NVDA', queryOptions),
       fetchLiveCape()
     ]);
 
+    // 【强制类型转换】消灭所有红线
+    const btcData = btcResult as any[];
+    const nvdaData = nvdaResult as any[];
+    const capeHistory = capeResult as any[];
+
     const mergedData = btcData.map((btcItem) => {
-      const nvdaItem = nvdaData.find(n => Math.abs(n.date.getTime() - btcItem.date.getTime()) < 604800000);
+      const dateStr = btcItem.date.toISOString().split('T')[0];
+      
+      const nvdaItem = nvdaData.find((n: any) => 
+        Math.abs(n.date.getTime() - btcItem.date.getTime()) < 604800000
+      );
+
       let capeValue = 0;
       for (let i = 0; i < capeHistory.length; i++) {
-         if (new Date(capeHistory[i].date) <= btcItem.date) capeValue = capeHistory[i].value;
+         if (new Date(capeHistory[i].date) <= btcItem.date) {
+            capeValue = capeHistory[i].value;
+         }
       }
       if (capeValue === 0 && capeHistory.length > 0) capeValue = capeHistory[capeHistory.length - 1].value;
 
       return {
-        date: btcItem.date.toISOString().split('T')[0],
+        date: dateStr,
         btc: btcItem.close,
         nvda: nvdaItem ? nvdaItem.close : null,
         cape: capeValue,
@@ -65,10 +80,18 @@ export async function GET() {
     });
 
     const btcQuote = await yahooFinance.quote('BTC-USD');
+    // 【这里是修复的关键】把 quote 也强转为 any，防止它报找不到属性
+    const currentPrice = (btcQuote as any).regularMarketPrice || 0;
     const latestCapeVal = capeHistory[capeHistory.length - 1]?.value || 0;
 
-    return NextResponse.json({ history: mergedData, currentPrice: btcQuote.regularMarketPrice, latestCape: latestCapeVal });
+    return NextResponse.json({ 
+        history: mergedData, 
+        currentPrice: currentPrice, 
+        latestCape: latestCapeVal 
+    });
+
   } catch (error) {
+    console.error(error);
     return NextResponse.json({ error: 'Failed' }, { status: 500 });
   }
 }
